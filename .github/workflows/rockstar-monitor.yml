@@ -3,7 +3,7 @@ name: OPSNET Rockstar GTAV Monitor
 on:
   workflow_dispatch:
 schedule:
-  - cron: "17 * * * *"
+  - cron: "1 * * * *"
 
 permissions:
   contents: write
