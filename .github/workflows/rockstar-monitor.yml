@@ -1,0 +1,113 @@
+name: OPSNET Rockstar GTAV Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository ophalen
+        uses: actions/checkout@v4
+
+      - name: Python installeren
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rockstar GTAV controleren
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          source_url = "https://support.rockstargames.com/gta-v"
+
+          req = urllib.request.Request(
+              source_url,
+              headers={
+                  "User-Agent": "Mozilla/5.0 OPSNET Rockstar Monitor",
+                  "Accept": "text/html,application/xhtml+xml",
+                  "Accept-Language": "en-US,en;q=0.9",
+              },
+          )
+
+          output = Path("sources/rockstar-gtav.json")
+
+          data = {
+              "source": "rockstar_gtav",
+              "provider": "Rockstar Games",
+              "version": "",
+              "title": "",
+              "source_url": source_url,
+              "checked_at": datetime.now(timezone.utc).isoformat(),
+              "status": "degraded",
+          }
+
+          try:
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  html = response.read().decode("utf-8", errors="replace")
+
+              matches = re.findall(
+                  r"GTAV\s+Title\s+Update\s+([0-9]+\.[0-9]+)\s+Notes",
+                  html,
+                  flags=re.IGNORECASE,
+              )
+
+              if not matches:
+                  raise RuntimeError(
+                      "Geen GTAV Title Update-versie gevonden."
+                  )
+
+              versions = sorted(
+                  set(matches),
+                  key=lambda v: tuple(map(int, v.split("."))),
+                  reverse=True,
+              )
+
+              version = versions[0]
+
+              data.update({
+                  "version": version,
+                  "title": f"GTAV Title Update {version} Notes",
+                  "status": "online",
+              })
+
+          except Exception as exc:
+              data["error"] = str(exc)
+
+          output.parent.mkdir(parents=True, exist_ok=True)
+
+          output.write_text(
+              json.dumps(
+                  data,
+                  indent=2,
+                  ensure_ascii=False
+              ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Wijzigingen committen
+        run: |
+          git config user.name "OPSNET Source Monitor"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add sources/rockstar-gtav.json
+
+          if git diff --cached --quiet; then
+            echo "Geen wijzigingen."
+            exit 0
+          fi
+
+          git commit -m "Update Rockstar GTAV source"
+          git push
