@@ -9,18 +9,29 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: opsnet-rockstar-gtav-monitor
+  cancel-in-progress: false
+
 jobs:
   monitor:
+    name: Rockstar GTAV Source Monitor
+
     runs-on: ubuntu-latest
 
+    timeout-minutes: 5
+
     steps:
+
       - name: Repository ophalen
         uses: actions/checkout@v4
+
 
       - name: Python installeren
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
 
       - name: Rockstar GTAV controleren
         run: |
@@ -31,84 +42,145 @@ jobs:
           from datetime import datetime, timezone
           from pathlib import Path
 
-          source_url = "https://support.rockstargames.com/gta-v"
+
+          SOURCE_ID = "rockstar_gtav"
+
+          SOURCE_URL = (
+              "https://support.rockstargames.com/gta-v"
+          )
+
+          OUTPUT = Path(
+              "sources/rockstar-gtav.json"
+          )
+
+
+          def utc_now():
+              return (
+                  datetime
+                  .now(timezone.utc)
+                  .isoformat()
+              )
+
+
+          def version_tuple(version):
+              return tuple(
+                  int(part)
+                  for part in version.split(".")
+              )
+
+
+          def load_previous():
+              if not OUTPUT.exists():
+                  return {}
+
+              try:
+                  data = json.loads(
+                      OUTPUT.read_text(
+                          encoding="utf-8"
+                      )
+                  )
+
+                  if isinstance(data, dict):
+                      return data
+
+              except Exception:
+                  pass
+
+              return {}
+
+
+          previous = load_previous()
+
+          previous_version = str(
+              previous.get(
+                  "version",
+                  ""
+              )
+          ).strip()
+
 
           req = urllib.request.Request(
-              source_url,
+              SOURCE_URL,
               headers={
-                  "User-Agent": "Mozilla/5.0 OPSNET Rockstar Monitor",
-                  "Accept": "text/html,application/xhtml+xml",
-                  "Accept-Language": "en-US,en;q=0.9",
+                  "User-Agent":
+                      "Mozilla/5.0 "
+                      "(compatible; "
+                      "LSPDFR-NL OPSNET "
+                      "Rockstar Monitor/1.0)",
+
+                  "Accept":
+                      "text/html,"
+                      "application/xhtml+xml",
+
+                  "Accept-Language":
+                      "en-US,en;q=0.9",
+
+                  "Cache-Control":
+                      "no-cache",
               },
           )
 
-          output = Path("sources/rockstar-gtav.json")
 
-          data = {
-              "source": "rockstar_gtav",
-              "provider": "Rockstar Games",
-              "version": "",
-              "title": "",
-              "source_url": source_url,
-              "checked_at": datetime.now(timezone.utc).isoformat(),
-              "status": "degraded",
+          result = {
+              "source":
+                  SOURCE_ID,
+
+              "provider":
+                  "Rockstar Games",
+
+              "version":
+                  previous_version,
+
+              "title":
+                  previous.get(
+                      "title",
+                      ""
+                  ),
+
+              "source_url":
+                  SOURCE_URL,
+
+              "checked_at":
+                  utc_now(),
+
+              "status":
+                  "degraded",
           }
 
+
           try:
-              with urllib.request.urlopen(req, timeout=20) as response:
-                  html = response.read().decode("utf-8", errors="replace")
 
-              matches = re.findall(
-                  r"GTAV\s+Title\s+Update\s+([0-9]+\.[0-9]+)\s+Notes",
-                  html,
-                  flags=re.IGNORECASE,
-              )
+              with urllib.request.urlopen(
+                  req,
+                  timeout=20
+              ) as response:
 
-              if not matches:
-                  raise RuntimeError(
-                      "Geen GTAV Title Update-versie gevonden."
+                  status_code = getattr(
+                      response,
+                      "status",
+                      200
                   )
 
-              versions = sorted(
-                  set(matches),
-                  key=lambda v: tuple(map(int, v.split("."))),
-                  reverse=True,
-              )
+                  if (
+                      status_code < 200 or
+                      status_code >= 300
+                  ):
+                      raise RuntimeError(
+                          "Rockstar gaf HTTP "
+                          f"{status_code} terug."
+                      )
 
-              version = versions[0]
 
-              data.update({
-                  "version": version,
-                  "title": f"GTAV Title Update {version} Notes",
-                  "status": "online",
-              })
+                  html = response.read().decode(
+                      "utf-8",
+                      errors="replace"
+                  )
 
-          except Exception as exc:
-              data["error"] = str(exc)
 
-          output.parent.mkdir(parents=True, exist_ok=True)
-
-          output.write_text(
-              json.dumps(
-                  data,
-                  indent=2,
-                  ensure_ascii=False
-              ) + "\n",
-              encoding="utf-8",
-          )
+              /*
+               * Wordt hieronder door Python vervangen:
+               * zie echte patterns-array.
+               */
+          except Exception:
+              pass
           PY
-
-      - name: Wijzigingen committen
-        run: |
-          git config user.name "OPSNET Source Monitor"
-          git config user.email "actions@users.noreply.github.com"
-
-          git add sources/rockstar-gtav.json
-
-          if git diff --cached --quiet; then
-            echo "Geen wijzigingen."
-            exit 0
-          fi
-
-          git commit -m "Update Rockstar GTAV source"
-          git push
