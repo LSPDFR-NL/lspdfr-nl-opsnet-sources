@@ -177,10 +177,203 @@ jobs:
                   )
 
 
-              /*
-               * Wordt hieronder door Python vervangen:
-               * zie echte patterns-array.
-               */
-          except Exception:
-              pass
+              patterns = (
+                  r"GTAV\s+Title\s+Update\s+"
+                  r"([0-9]{1,3}\.[0-9]{1,3})"
+                  r"\s+Notes",
+
+                  r"GTA\s*V\s+Title\s+Update\s+"
+                  r"([0-9]{1,3}\.[0-9]{1,3})"
+                  r"\s+Notes",
+              )
+
+
+              matches = []
+
+              for pattern in patterns:
+
+                  matches.extend(
+                      re.findall(
+                          pattern,
+                          html,
+                          flags=re.IGNORECASE,
+                      )
+                  )
+
+
+              versions = sorted(
+                  set(matches),
+                  key=version_tuple,
+                  reverse=True,
+              )
+
+
+              if not versions:
+                  raise RuntimeError(
+                      "Geen geldige GTAV "
+                      "Title Update-versie "
+                      "gevonden."
+                  )
+
+
+              detected_version = versions[0]
+
+
+              if (
+                  previous_version and
+                  version_tuple(
+                      detected_version
+                  ) <
+                  version_tuple(
+                      previous_version
+                  )
+              ):
+
+                  raise RuntimeError(
+                      "Rockstar rapporteert "
+                      "onverwacht een oudere "
+                      "versie: "
+                      f"{detected_version}; "
+                      "OPSNET behoudt "
+                      f"{previous_version}."
+                  )
+
+
+              result.update({
+                  "version":
+                      detected_version,
+
+                  "title":
+                      "GTAV Title Update "
+                      f"{detected_version} Notes",
+
+                  "status":
+                      "online",
+              })
+
+
+          except Exception as exc:
+
+              result["error"] = str(
+                  exc
+              )
+
+
+          semantic_keys = (
+              "source",
+              "provider",
+              "version",
+              "title",
+              "source_url",
+              "status",
+              "error",
+          )
+
+
+          previous_semantic = {
+              key:
+                  previous.get(key)
+
+              for key in semantic_keys
+          }
+
+
+          current_semantic = {
+              key:
+                  result.get(key)
+
+              for key in semantic_keys
+          }
+
+
+          changed = (
+              not OUTPUT.exists() or
+              previous_semantic !=
+              current_semantic
+          )
+
+
+          if not changed:
+
+              print(
+                  "OPSNET: geen inhoudelijke "
+                  "Rockstar-wijziging."
+              )
+
+              print(
+                  "Huidige versie:",
+                  result.get(
+                      "version",
+                      "unknown"
+                  )
+              )
+
+              print(
+                  "Status:",
+                  result.get(
+                      "status",
+                      "unknown"
+                  )
+              )
+
+              raise SystemExit(0)
+
+
+          OUTPUT.parent.mkdir(
+              parents=True,
+              exist_ok=True
+          )
+
+
+          OUTPUT.write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  ensure_ascii=False
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+
+          print(
+              "OPSNET source gewijzigd."
+          )
+
+          print(
+              "Versie:",
+              result.get(
+                  "version",
+                  "unknown"
+              )
+          )
+
+          print(
+              "Status:",
+              result.get(
+                  "status",
+                  "unknown"
+              )
+          )
           PY
+
+
+      - name: Wijzigingen committen
+        run: |
+          git config user.name \
+            "OPSNET Source Monitor"
+
+          git config user.email \
+            "actions@users.noreply.github.com"
+
+          git add \
+            sources/rockstar-gtav.json
+
+          if git diff --cached --quiet; then
+            echo "Geen bronwijzigingen om te committen."
+            exit 0
+          fi
+
+          git commit \
+            -m "Update Rockstar GTAV source"
+
+          git push
