@@ -1,0 +1,49 @@
+name: OPSNET LSPDFR Source Monitor
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: opsnet-lspdfr-source-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Monitor LSPDFR source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Read official LSPDFR source
+        run: |
+          python workers/lspdfr_monitor.py
+
+      - name: Commit source heartbeat
+        run: |
+          if git diff --quiet -- sources/lspdfr.json; then
+            echo "Geen wijzigingen om te committen."
+            exit 0
+          fi
+
+          git config user.name "LSPDFR-NL OPSNET"
+          git config user.email "vincent@lspdfr-nl.nl"
+
+          git add sources/lspdfr.json
+          git commit -m "OPSNET: update LSPDFR source heartbeat"
+          git push
