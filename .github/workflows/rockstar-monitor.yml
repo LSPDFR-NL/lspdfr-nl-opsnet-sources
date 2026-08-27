@@ -99,6 +99,8 @@ jobs:
           ).strip()
 
 
+          now = utc_now()
+
           req = urllib.request.Request(
               SOURCE_URL,
               headers={
@@ -106,7 +108,7 @@ jobs:
                       "Mozilla/5.0 "
                       "(compatible; "
                       "LSPDFR-NL OPSNET "
-                      "Rockstar Monitor/1.0)",
+                      "Rockstar Monitor/1.1)",
 
                   "Accept":
                       "text/html,"
@@ -140,8 +142,26 @@ jobs:
               "source_url":
                   SOURCE_URL,
 
+              # Heartbeat: iedere uitgevoerde monitor-run.
               "checked_at":
-                  utc_now(),
+                  now,
+
+              # Alleen vernieuwen wanneer Rockstar succesvol is uitgelezen.
+              "last_success_at":
+                  previous.get(
+                      "last_success_at",
+                      ""
+                  ),
+
+              # Alleen vernieuwen bij een inhoudelijke bronwijziging.
+              "source_changed_at":
+                  previous.get(
+                      "source_changed_at",
+                      previous.get(
+                          "checked_at",
+                          ""
+                      )
+                  ),
 
               "status":
                   "degraded",
@@ -249,6 +269,9 @@ jobs:
 
                   "status":
                       "online",
+
+                  "last_success_at":
+                      now,
               })
 
 
@@ -293,30 +316,18 @@ jobs:
           )
 
 
-          if not changed:
+          if changed:
+              result["source_changed_at"] = now
 
+              print(
+                  "OPSNET: inhoudelijke "
+                  "Rockstar-wijziging gedetecteerd."
+              )
+          else:
               print(
                   "OPSNET: geen inhoudelijke "
                   "Rockstar-wijziging."
               )
-
-              print(
-                  "Huidige versie:",
-                  result.get(
-                      "version",
-                      "unknown"
-                  )
-              )
-
-              print(
-                  "Status:",
-                  result.get(
-                      "status",
-                      "unknown"
-                  )
-              )
-
-              raise SystemExit(0)
 
 
           OUTPUT.parent.mkdir(
@@ -325,6 +336,7 @@ jobs:
           )
 
 
+          # Altijd wegschrijven zodat checked_at als echte heartbeat werkt.
           OUTPUT.write_text(
               json.dumps(
                   result,
@@ -336,7 +348,27 @@ jobs:
 
 
           print(
-              "OPSNET source gewijzigd."
+              "Heartbeat:",
+              result.get(
+                  "checked_at",
+                  "unknown"
+              )
+          )
+
+          print(
+              "Laatste succesvolle broncontrole:",
+              result.get(
+                  "last_success_at",
+                  "unknown"
+              )
+          )
+
+          print(
+              "Laatste inhoudelijke bronwijziging:",
+              result.get(
+                  "source_changed_at",
+                  "unknown"
+              )
           )
 
           print(
