@@ -40,7 +40,11 @@ jobs:
           from datetime import datetime, timezone
           from pathlib import Path
 
-          SOURCE_URL = "https://support.rockstargames.com/gta-v"
+          SOURCE_URL = (
+    "https://support.rockstargames.com/articles/"
+    "4vRqEDvjUs9h7nqRUgc8YO/"
+    "gtav-title-update-1-73-notes-ps5-ps4-"
+    "xbox-series-x-or-s-xbox-one-pc-enhanced-legacy")
           OUTPUT = Path("sources/rockstar-gtav.json")
           MAX_BYTES = 2 * 1024 * 1024
           ATTEMPTS = 3
