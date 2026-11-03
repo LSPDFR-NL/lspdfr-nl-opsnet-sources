@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: opsnet-rockstar-gtav-monitor
+  group: opsnet-source-publish-main
   cancel-in-progress: false
 
 jobs:
@@ -20,8 +20,10 @@ jobs:
 
     steps:
 
-      - name: Repository ophalen
-        uses: actions/checkout@v4
+- name: Repository ophalen
+  uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
 
 
       - name: Python installeren
@@ -386,23 +388,45 @@ jobs:
           PY
 
 
-      - name: Wijzigingen committen
+
+      - name: Wijzigingen veilig publiceren
+        shell: bash
         run: |
-          git config user.name \
-            "OPSNET Source Monitor"
+          set -euo pipefail
 
-          git config user.email \
-            "actions@users.noreply.github.com"
+          git config user.name "OPSNET Source Monitor"
+          git config user.email "actions@users.noreply.github.com"
 
-          git add \
-            sources/rockstar-gtav.json
+          git add sources/rockstar-gtav.json
 
           if git diff --cached --quiet; then
-            echo "Geen bronwijzigingen om te committen."
+            echo "OPSNET: geen wijzigingen om te publiceren."
             exit 0
           fi
 
-          git commit \
-            -m "Update Rockstar GTAV source"
+          git commit -m "Update Rockstar GTAV source"
+
+          for attempt in 1 2 3; do
+            echo "OPSNET: publicatiepoging $attempt van 3"
+
+            git fetch origin main
+
+            if ! git rebase origin/main; then
+              git rebase --abort || true
+              echo "::error::Git-conflict tijdens synchronisatie. Geen gegevens overschreven."
+              exit 1
+            fi
+
+            if git push origin HEAD:main; then
+              echo "OPSNET: Rockstar-brongegevens succesvol gepubliceerd."
+              exit 0
+            fi
+
+            echo "OPSNET: push geweigerd, nieuwe poging volgt."
+            sleep 3
+          done
+
+          echo "::error::Publicatie na drie pogingen mislukt."
+          exit 1
 
           git push
