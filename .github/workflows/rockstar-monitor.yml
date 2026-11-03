@@ -42,11 +42,8 @@ jobs:
 
 
           SOURCE_URL = (
-              "https://support.rockstargames.com/articles/"
-              "4vRqEDvjUs9h7nqRUgc8YO/"
-              "gtav-title-update-1-73-notes-ps5-ps4-"
-              "xbox-series-x-or-s-xbox-one-pc-enhanced-legacy"
-          )
+          "https://support.rockstargames.com/gta-v"
+           )
 
           OUTPUT = Path("sources/rockstar-gtav.json")
           MAX_BYTES = 2 * 1024 * 1024
