@@ -1,4 +1,3 @@
-
 name: OPSNET Rockstar GTAV Monitor
 
 on:
@@ -28,400 +27,155 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Rockstar GTAV controleren
+      - name: Rockstar GTAV controleren (diagnostiek v1.2)
         run: |
           python - <<'PY'
-
+          import html
           import json
           import re
+          import socket
+          import time
+          import urllib.error
           import urllib.request
           from datetime import datetime, timezone
           from pathlib import Path
 
-
-          SOURCE_ID = "rockstar_gtav"
-
-          SOURCE_URL = (
-              "https://support.rockstargames.com/gta-v"
-          )
-
-          OUTPUT = Path(
-              "sources/rockstar-gtav.json"
-          )
+          SOURCE_URL = "https://support.rockstargames.com/gta-v"
+          OUTPUT = Path("sources/rockstar-gtav.json")
+          MAX_BYTES = 2 * 1024 * 1024
+          ATTEMPTS = 3
+          TIMEOUT = 15
 
 
           def utc_now():
-              return (
-                  datetime
-                  .now(timezone.utc)
-                  .isoformat()
-              )
+              return datetime.now(timezone.utc).isoformat()
 
 
           def version_tuple(version):
-              return tuple(
-                  int(part)
-                  for part in version.split(".")
-              )
+              return tuple(int(x) for x in version.split("."))
 
 
-          def load_previous():
-              if not OUTPUT.exists():
+          def previous_data():
+              try:
+                  obj = json.loads(OUTPUT.read_text(encoding="utf-8"))
+                  return obj if isinstance(obj, dict) else {}
+              except (FileNotFoundError, ValueError, OSError):
                   return {}
 
-              try:
-                  data = json.loads(
-                      OUTPUT.read_text(
-                          encoding="utf-8"
-                      )
-                  )
 
-                  if isinstance(data, dict):
-                      return data
-
-              except Exception:
-                  pass
-
-              return {}
-
-
-          previous = load_previous()
-
-          previous_version = str(
-              previous.get(
-                  "version",
-                  ""
-              )
-          ).strip()
-
-
-          now = utc_now()
-
-          req = urllib.request.Request(
-              SOURCE_URL,
-              headers={
-                  "User-Agent":
-                      "Mozilla/5.0 "
-                      "(compatible; "
-                      "LSPDFR-NL OPSNET "
-                      "Rockstar Monitor/1.1)",
-
-                  "Accept":
-                      "text/html,"
-                      "application/xhtml+xml",
-
-                  "Accept-Language":
-                      "en-US,en;q=0.9",
-
-                  "Cache-Control":
-                      "no-cache",
-              },
-          )
-
-
-          result = {
-              "source":
-                  SOURCE_ID,
-
-              "provider":
-                  "Rockstar Games",
-
-              "version":
-                  previous_version,
-
-              "title":
-                  previous.get(
-                      "title",
-                      ""
-                  ),
-
-              "source_url":
-                  SOURCE_URL,
-
-              # Heartbeat: iedere uitgevoerde monitor-run.
-              "checked_at":
-                  now,
-
-              # Alleen vernieuwen wanneer Rockstar succesvol is uitgelezen.
-              "last_success_at":
-                  previous.get(
-                      "last_success_at",
-                      ""
-                  ),
-
-              # Alleen vernieuwen bij een inhoudelijke bronwijziging.
-              "source_changed_at":
-                  previous.get(
-                      "source_changed_at",
-                      previous.get(
-                          "checked_at",
-                          ""
-                      )
-                  ),
-
-              "status":
-                  "degraded",
-          }
-
-
-          try:
-
-              with urllib.request.urlopen(
-                  req,
-                  timeout=20
-              ) as response:
-
-                  status_code = getattr(
-                      response,
-                      "status",
-                      200
-                  )
-
-                  if (
-                      status_code < 200 or
-                      status_code >= 300
-                  ):
-                      raise RuntimeError(
-                          "Rockstar gaf HTTP "
-                          f"{status_code} terug."
-                      )
-
-
-                  html = response.read().decode(
-                      "utf-8",
-                      errors="replace"
-                  )
-
-
-              patterns = (
-                  r"GTAV\s+Title\s+Update\s+"
-                  r"([0-9]{1,3}\.[0-9]{1,3})"
-                  r"\s+Notes",
-
-                  r"GTA\s*V\s+Title\s+Update\s+"
-                  r"([0-9]{1,3}\.[0-9]{1,3})"
-                  r"\s+Notes",
-              )
-
-
+          def extract_version(page):
+              # Normaliseer HTML-entiteiten, whitespace en eventueel ge-escape-te tekst.
+              content = html.unescape(page).replace("\\/", "/")
+              patterns = [
+                  r"GTA\s*V\s+Title\s+Update\s+([0-9]{1,3}\.[0-9]{1,3})\s+Notes",
+                  r"GTAV\s+Title\s+Update\s+([0-9]{1,3}\.[0-9]{1,3})\s+Notes",
+                  r"gtav-title-update-([0-9]{1,3})-([0-9]{1,3})-notes",
+              ]
               matches = []
-
-              for pattern in patterns:
-
-                  matches.extend(
-                      re.findall(
-                          pattern,
-                          html,
-                          flags=re.IGNORECASE,
-                      )
-                  )
+              for idx, pattern in enumerate(patterns):
+                  for match in re.finditer(pattern, content, re.IGNORECASE):
+                      if idx == 2:
+                          matches.append(f"{int(match.group(1))}.{match.group(2)}")
+                      else:
+                          matches.append(match.group(1))
+              return max(set(matches), key=version_tuple) if matches else None
 
 
-              versions = sorted(
-                  set(matches),
-                  key=version_tuple,
-                  reverse=True,
-              )
+          previous = previous_data()
+          old_version = str(previous.get("version") or "").strip()
+          result = {
+              "source": "rockstar_gtav",
+              "provider": "Rockstar Games",
+              "version": old_version,
+              "title": previous.get("title", ""),
+              "source_url": SOURCE_URL,
+              "checked_at": utc_now(),
+              "last_success_at": previous.get("last_success_at", ""),
+              "source_changed_at": previous.get("source_changed_at", previous.get("checked_at", "")),
+              "status": "degraded",
+          }
 
-
-              if not versions:
-                  raise RuntimeError(
-                      "Geen geldige GTAV "
-                      "Title Update-versie "
-                      "gevonden."
-                  )
-
-
-              detected_version = versions[0]
-
-
-              if (
-                  previous_version and
-                  version_tuple(
-                      detected_version
-                  ) <
-                  version_tuple(
-                      previous_version
-                  )
-              ):
-
-                  raise RuntimeError(
-                      "Rockstar rapporteert "
-                      "onverwacht een oudere "
-                      "versie: "
-                      f"{detected_version}; "
-                      "OPSNET behoudt "
-                      f"{previous_version}."
-                  )
-
-
-              result.update({
-                  "version":
-                      detected_version,
-
-                  "title":
-                      "GTAV Title Update "
-                      f"{detected_version} Notes",
-
-                  "status":
-                      "online",
-
-                  "last_success_at":
-                      now,
+          for attempt in range(1, ATTEMPTS + 1):
+              started = time.monotonic()
+              print(f"OPSNET: Rockstar HTTP-poging {attempt}/{ATTEMPTS}", flush=True)
+              req = urllib.request.Request(SOURCE_URL, headers={
+                  "User-Agent": "Mozilla/5.0 (compatible; OPSNET-Rockstar-Monitor/1.2)",
+                  "Accept": "text/html,application/xhtml+xml",
+                  "Accept-Language": "en-US,en;q=0.9",
+                  "Cache-Control": "no-cache",
               })
+              try:
+                  with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+                      http_status = response.status
+                      charset = response.headers.get_content_charset() or "utf-8"
+                      raw = response.read(MAX_BYTES + 1)
+                      if len(raw) > MAX_BYTES:
+                          raise RuntimeError("HTML-pagina groter dan 2 MiB")
+                      text = raw.decode(charset, errors="replace")
+                  duration = time.monotonic() - started
+                  print(f"OPSNET: HTTP {http_status}; {len(raw)} bytes; {duration:.1f}s; charset={charset}", flush=True)
+                  version = extract_version(text)
+                  if not version:
+                      raise RuntimeError("HTTP ontvangen, maar geen geldige GTAV Title Update-versie in HTML of artikellink gevonden")
+                  if old_version and version_tuple(version) < version_tuple(old_version):
+                      raise RuntimeError(f"Bron rapporteert oudere versie {version} dan bekende {old_version}")
+                  now = utc_now()
+                  if version != old_version or not previous.get("source_changed_at"):
+                      result["source_changed_at"] = now
+                      print(f"OPSNET: echte versiewijziging: {old_version or '(onbekend)'} -> {version}", flush=True)
+                  result.update({
+                      "version": version,
+                      "title": f"GTAV Title Update {version} Notes",
+                      "status": "online",
+                      "last_success_at": now,
+                      "checked_at": now,
+                  })
+                  print(f"OPSNET: broncontrole OK, versie {version}", flush=True)
+                  break
+              except urllib.error.HTTPError as exc:
+                  error = f"HTTP {exc.code} ({exc.reason})"
+              except (urllib.error.URLError, TimeoutError, socket.timeout, OSError, RuntimeError, UnicodeError) as exc:
+                  error = f"{type(exc).__name__}: {exc}"
+              except Exception as exc:
+                  error = f"Onverwachte {type(exc).__name__}: {exc}"
+              print(f"OPSNET: poging {attempt} mislukt na {time.monotonic()-started:.1f}s: {error}", flush=True)
+              result["error"] = error[:350]
+              if attempt < ATTEMPTS:
+                  time.sleep(2 * attempt)
 
-
-          except Exception as exc:
-
-              result["error"] = str(
-                  exc
-              )
-
-
-          semantic_keys = (
-              "source",
-              "provider",
-              "version",
-              "title",
-              "source_url",
-              "status",
-              "error",
-          )
-
-
-          previous_semantic = {
-              key:
-                  previous.get(key)
-
-              for key in semantic_keys
-          }
-
-
-          current_semantic = {
-              key:
-                  result.get(key)
-
-              for key in semantic_keys
-          }
-
-
-          changed = (
-              not OUTPUT.exists() or
-              previous_semantic !=
-              current_semantic
-          )
-
-
-          if changed:
-              result["source_changed_at"] = now
-
-              print(
-                  "OPSNET: inhoudelijke "
-                  "Rockstar-wijziging gedetecteerd."
-              )
-          else:
-              print(
-                  "OPSNET: geen inhoudelijke "
-                  "Rockstar-wijziging."
-              )
-
-
-          OUTPUT.parent.mkdir(
-              parents=True,
-              exist_ok=True
-          )
-
-
-          # Altijd wegschrijven zodat checked_at als echte heartbeat werkt.
-          OUTPUT.write_text(
-              json.dumps(
-                  result,
-                  indent=2,
-                  ensure_ascii=False
-              ) + "\n",
-              encoding="utf-8",
-          )
-
-
-          print(
-              "Heartbeat:",
-              result.get(
-                  "checked_at",
-                  "unknown"
-              )
-          )
-
-          print(
-              "Laatste succesvolle broncontrole:",
-              result.get(
-                  "last_success_at",
-                  "unknown"
-              )
-          )
-
-          print(
-              "Laatste inhoudelijke bronwijziging:",
-              result.get(
-                  "source_changed_at",
-                  "unknown"
-              )
-          )
-
-          print(
-              "Versie:",
-              result.get(
-                  "version",
-                  "unknown"
-              )
-          )
-
-          print(
-              "Status:",
-              result.get(
-                  "status",
-                  "unknown"
-              )
-          )
+          result["checked_at"] = utc_now()
+          OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+          OUTPUT.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print("OPSNET resultaat:", json.dumps({key: result.get(key) for key in ("version", "status", "checked_at", "last_success_at", "source_changed_at", "error")}, ensure_ascii=False), flush=True)
+          # Een tijdelijke Rockstar-fout is een bronstatus, geen fout in de GitHub-workflow.
+          # De JSON wordt dus ook bij DEGRADED veilig gepubliceerd.
           PY
-
-
 
       - name: Wijzigingen veilig publiceren
         shell: bash
         run: |
           set -euo pipefail
-
           git config user.name "OPSNET Source Monitor"
           git config user.email "actions@users.noreply.github.com"
-
           git add sources/rockstar-gtav.json
-
           if git diff --cached --quiet; then
             echo "OPSNET: geen wijzigingen om te publiceren."
             exit 0
           fi
-
           git commit -m "Update Rockstar GTAV source"
-
           for attempt in 1 2 3; do
             echo "OPSNET: publicatiepoging $attempt van 3"
-
             git fetch origin main
-
             if ! git rebase origin/main; then
               git rebase --abort || true
-              echo "::error::Git-conflict tijdens synchronisatie. Geen gegevens overschreven."
+              echo "::error::Git-conflict: handmatige controle nodig."
               exit 1
             fi
-
             if git push origin HEAD:main; then
-              echo "OPSNET: Rockstar-brongegevens succesvol gepubliceerd."
+              echo "OPSNET: succesvol gepubliceerd."
               exit 0
             fi
-
-            echo "OPSNET: push geweigerd, nieuwe poging volgt."
             sleep 3
           done
-
           echo "::error::Publicatie na drie pogingen mislukt."
           exit 1
