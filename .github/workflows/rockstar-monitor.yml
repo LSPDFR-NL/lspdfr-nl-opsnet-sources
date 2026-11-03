@@ -27,6 +27,27 @@ jobs:
         with:
           python-version: "3.12"
 
+      
+      - name: Rockstar netwerkdiagnose
+        shell: bash
+        run: |
+          echo "=== DNS ==="
+          getent ahosts support.rockstargames.com | head -n 5 || true
+
+          echo "=== IPv4 HTTP-test ==="
+          curl -4 -sS -L -o /dev/null \
+            --connect-timeout 8 \
+            --max-time 20 \
+            -w 'HTTP: %{http_code}\nConnect: %{time_connect}s\nTLS: %{time_appconnect}s\nFirst byte: %{time_starttransfer}s\nTotal: %{time_total}s\n' \
+            https://support.rockstargames.com/gta-v || true
+
+          echo "=== IPv6 HTTP-test ==="
+          curl -6 -sS -L -o /dev/null \
+            --connect-timeout 8 \
+            --max-time 20 \
+            -w 'HTTP: %{http_code}\nTotal: %{time_total}s\n' \
+            https://support.rockstargames.com/gta-v || true
+      
       - name: Rockstar GTAV controleren (diagnostiek v1.2)
         run: |
           python - <<'PY'
