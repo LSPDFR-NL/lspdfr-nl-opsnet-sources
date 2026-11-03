@@ -19,7 +19,6 @@ jobs:
     timeout-minutes: 5
 
     steps:
-
 - name: Repository ophalen
   uses: actions/checkout@v4
   with:
