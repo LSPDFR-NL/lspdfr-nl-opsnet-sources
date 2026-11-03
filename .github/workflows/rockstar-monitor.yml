@@ -47,6 +47,27 @@ jobs:
             --max-time 20 \
             -w 'HTTP: %{http_code}\nTotal: %{time_total}s\n' \
             https://support.rockstargames.com/gta-v || true
+
+            
+      - name: Rockstar HTTP-protocoltest
+        shell: bash
+        run: |
+          echo "=== HTTP/1.1 ==="
+          curl --http1.1 -4 -L -sS \
+            --connect-timeout 8 \
+            --max-time 20 \
+            -o /dev/null \
+            -w 'HTTP: %{http_code}\nTotal: %{time_total}s\n' \
+            https://support.rockstargames.com/gta-v || true
+
+          echo "=== HTTP/2 ==="
+          curl --http2 -4 -L -sS \
+            --connect-timeout 8 \
+            --max-time 20 \
+            -o /dev/null \
+            -w 'HTTP: %{http_code}\nTotal: %{time_total}s\n' \
+            https://support.rockstargames.com/gta-v || true
+
       
       - name: Rockstar GTAV controleren (diagnostiek v1.2)
         run: |
