@@ -1,3 +1,4 @@
+
 name: OPSNET Rockstar GTAV Monitor
 
 on:
@@ -13,27 +14,24 @@ concurrency:
 jobs:
   monitor:
     name: Rockstar GTAV Source Monitor
-
     runs-on: ubuntu-latest
-
     timeout-minutes: 5
 
     steps:
-- name: Repository ophalen
-  uses: actions/checkout@v4
-  with:
-    fetch-depth: 0
-
+      - name: Repository ophalen
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Python installeren
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-
       - name: Rockstar GTAV controleren
         run: |
           python - <<'PY'
+
           import json
           import re
           import urllib.request
@@ -427,5 +425,3 @@ jobs:
 
           echo "::error::Publicatie na drie pogingen mislukt."
           exit 1
-
-          git push
