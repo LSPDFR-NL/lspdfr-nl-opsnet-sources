@@ -1,0 +1,113 @@
+name: OPSNET Source Gateway Integration (TEST)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-gateway:
+    name: OPSNET Gateway JSON validatie (alleen lezen)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Python 3.12 installeren
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Publieke gateway controleren
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          ENDPOINT = 'https://lspdfr-nl.nl/wp-json/opsnet-source-gateway/v1/rockstar-source'
+          REQUEST_TIMEOUT = 12
+          MAX_BYTES = 128 * 1024
+
+          def fail(reason):
+              print(f'::error::{reason}', flush=True)
+              sys.exit(1)
+
+          req = urllib.request.Request(ENDPOINT, headers={
+              'User-Agent': 'OPSNET-Gateway-Integration-Test/1.0',
+              'Accept': 'application/json',
+          })
+          start = time.monotonic()
+          try:
+              with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+                  status = response.status
+                  content_type = response.headers.get('Content-Type', '')
+                  raw = response.read(MAX_BYTES + 1)
+          except (urllib.error.URLError, TimeoutError, OSError) as exc:
+              fail(f'Gateway onbereikbaar: {type(exc).__name__}: {exc}')
+
+          seconds = time.monotonic() - start
+          print(f'Gateway HTTP: {status}; Content-Type: {content_type}; Bytes: {len(raw)}; Duur: {seconds:.2f}s', flush=True)
+          if status != 200:
+              fail(f'Onverwachte HTTP-status: {status}')
+          if len(raw) > MAX_BYTES:
+              fail('Gateway JSON groter dan 128 KiB')
+          if 'application/json' not in content_type.lower():
+              fail(f'Geen JSON Content-Type: {content_type}')
+
+          try:
+              data = json.loads(raw.decode('utf-8'))
+          except (ValueError, UnicodeDecodeError) as exc:
+              fail(f'Ongeldige JSON: {exc}')
+          if not isinstance(data, dict):
+              fail('Gateway-response is geen JSON-object')
+          if data.get('schema_version') != '1.0':
+              fail('Onverwachte schema_version')
+          if data.get('source') != 'rockstar_gtav':
+              fail('Onjuiste bron-ID')
+          if data.get('gateway') != 'opsnet' or data.get('gateway_status') != 'online':
+              fail('Gateway is niet als operationeel gemarkeerd')
+
+          verification = data.get('verification')
+          if not isinstance(verification, dict):
+              fail('Verificatieobject ontbreekt')
+          if verification.get('status') != 'verified':
+              fail('Geen geverifieerde versie aanwezig')
+          if verification.get('method') != 'manual_official_article':
+              fail('Onverwachte verificatiemethode')
+          version = str(verification.get('version') or '')
+          if not re.fullmatch(r'\d{1,3}\.\d{1,3}', version):
+              fail(f'Ongeldige versie: {version!r}')
+          title = str(verification.get('title') or '')
+          if version not in title:
+              fail('Titel bevat versienummer niet')
+          official_url = str(verification.get('official_url') or '')
+          official = urllib.parse.urlsplit(official_url)
+          if official.scheme != 'https' or official.hostname != 'support.rockstargames.com' or not official.path.startswith('/articles/'):
+              fail('Ongeldige officiële Rockstar-artikellink')
+
+          for key, value in [('verified_at', verification.get('verified_at')), ('generated_at', data.get('generated_at'))]:
+              if not isinstance(value, str):
+                  fail(f'{key} ontbreekt')
+              try:
+                  dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                  if dt.tzinfo is None:
+                      raise ValueError('timezone ontbreekt')
+              except ValueError:
+                  fail(f'{key} heeft geen geldige ISO-8601-tijd met timezone')
+
+          monitor = data.get('automatic_monitor')
+          if not isinstance(monitor, dict) or not isinstance(monitor.get('status'), str):
+              fail('Afzonderlijke automatic_monitor.status ontbreekt')
+
+          print('OPSNET Gateway: JSON en verificatievelden geldig.', flush=True)
+          print('Handmatig geverifieerde versie:', version, flush=True)
+          print('Automatische Rockstar-monitorstatus:', monitor['status'], flush=True)
+          print('LET OP: Deze test bevestigt uitsluitend de OPSNET Gateway, niet de bereikbaarheid van Rockstar Support.', flush=True)
+          print('Geen productiegegevens gewijzigd.', flush=True)
+          PY
