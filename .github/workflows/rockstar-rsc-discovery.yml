@@ -2,6 +2,11 @@ name: OPSNET Rockstar RSC Discovery (TEST)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/rockstar-rsc-discovery.yml'
 
 permissions:
   contents: read
