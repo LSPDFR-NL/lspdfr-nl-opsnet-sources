@@ -22,14 +22,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Python installeren
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Runner en Python vastleggen
+        shell: bash
+        run: |
+          echo "OPSNET: runner=${RUNNER_OS} arch=${RUNNER_ARCH}"
+          command -v python3
+          python3 --version
+          python3 -c 'import sys,ssl; print("Python executable:",sys.executable); print("OpenSSL:",ssl.OPENSSL_VERSION)'
 
       - name: Rockstar GTAV controleren (v1.5 browserheaders)
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import html
           import json
           import re
