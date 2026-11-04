@@ -1,0 +1,128 @@
+name: OPSNET Rockstar Python Vergelijking (TEST)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/opsnet-rockstar-python-vergelijking.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Python HTTP diagnostiek (alleen lezen)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Vergelijk Rockstar HTTP aanvragen
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import html
+          import re
+          import socket
+          import time
+          import urllib.error
+          import urllib.request
+          from urllib.parse import urlparse
+          
+          INDEX = 'https://support.rockstargames.com/gta-v'
+          ARTICLE = ('https://support.rockstargames.com/articles/'
+                     '4vRqEDvjUs9h7nqRUgc8YO/'
+                     'gtav-title-update-1-73-notes-ps5-ps4-'
+                     'xbox-series-x-or-s-xbox-one-pc-enhanced-legacy')
+          MAX_BYTES = 2 * 1024 * 1024
+          TIMEOUT = 10
+          VERSIONS = (
+              r'GTA\s*V\s+Title\s+Update\s+(\d{1,3}\.\d{1,3})\s+Notes',
+              r'GTAV\s+Title\s+Update\s+(\d{1,3}\.\d{1,3})\s+Notes',
+          )
+          
+          CASES = [
+              ('A: eenvoudige urllib / GTA V-overzicht', INDEX, {}),
+              ('B: monitor v1.4 headers / GTA V-overzicht', INDEX, {
+                  'User-Agent': 'OPSNET-Source-Monitor/1.4 (+https://lspdfr-nl.nl)',
+                  'Accept': 'application/json,text/html;q=0.9',
+              }),
+              ('C: browserachtige headers / GTA V-overzicht', INDEX, {
+                  'User-Agent': 'Mozilla/5.0 (compatible; OPSNET-Source-Diagnostic/1.0)',
+                  'Accept': 'text/html,application/xhtml+xml',
+                  'Accept-Language': 'en-US,en;q=0.9',
+              }),
+              ('D: browserachtige headers / bekend Rockstar-artikel', ARTICLE, {
+                  'User-Agent': 'Mozilla/5.0 (compatible; OPSNET-Source-Diagnostic/1.0)',
+                  'Accept': 'text/html,application/xhtml+xml',
+                  'Accept-Language': 'en-US,en;q=0.9',
+              }),
+          ]
+          
+          
+          def safe_url(value):
+              parsed = urlparse(value)
+              if parsed.hostname not in {'support.rockstargames.com'}:
+                  return '[DOORGESTUURD NAAR ANDERE HOST]'
+              return f'{parsed.scheme}://{parsed.hostname}{parsed.path}'
+          
+          
+          def run_test(name, url, headers):
+              print(f'\n=== {name} ===', flush=True)
+              start = time.monotonic()
+              first_byte_at = None
+              try:
+                  request = urllib.request.Request(url, headers=headers, method='GET')
+                  with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                      status = response.status
+                      final_url = response.geturl()
+                      content_type = response.headers.get('Content-Type', '')
+                      content_length = response.headers.get('Content-Length', '-')
+                      body = bytearray()
+                      first_chunk = response.read(512)
+                      first_byte_at = time.monotonic() - start
+                      body.extend(first_chunk)
+                      while len(body) <= MAX_BYTES:
+                          chunk = response.read(min(65536, MAX_BYTES + 1 - len(body)))
+                          if not chunk:
+                              break
+                          body.extend(chunk)
+                          if len(body) > MAX_BYTES:
+                              break
+                  duration = time.monotonic() - start
+                  print(f'HTTP: {status}; final URL: {safe_url(final_url)}', flush=True)
+                  print(f'Content-Type: {content_type}; Content-Length: {content_length}', flush=True)
+                  print(f'First read: {first_byte_at:.2f}s; total: {duration:.2f}s; bytes: {len(body)}', flush=True)
+                  if len(body) > MAX_BYTES:
+                      print('Inhoud >2 MiB; niet volledig geanalyseerd', flush=True)
+                      return 'too-large'
+                  raw_text = body.decode('utf-8', errors='replace')
+                  normalized = html.unescape(raw_text).replace('\\/', '/')
+                  matches = sorted(set(match for pattern in VERSIONS
+                                       for match in re.findall(pattern, normalized, re.I)))
+                  is_html = '<html' in normalized.lower() or '<!doctype html' in normalized.lower()
+                  print(f'HTML document: {is_html}; titelversies: {matches or "geen"}', flush=True)
+                  print(f'Artikelslug aanwezig: {"gtav-title-update-1-73-notes" in normalized.lower()}', flush=True)
+                  if status == 200 and (matches or 'gtav-title-update-1-73-notes' in normalized.lower()):
+                      return 'version-found'
+                  return 'http-without-version' if status == 200 else 'http-error'
+              except urllib.error.HTTPError as exc:
+                  print(f'HTTP-fout: {exc.code} ({exc.reason}); na {time.monotonic()-start:.2f}s', flush=True)
+                  return 'http-error'
+              except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+                  print(f'Netwerkfout: {type(exc).__name__}: {exc}; na {time.monotonic()-start:.2f}s', flush=True)
+                  return 'network-error'
+              except Exception as exc:
+                  print(f'Onverwachte fout: {type(exc).__name__}: {exc}', flush=True)
+                  return 'unexpected-error'
+          
+          
+          print('OPSNET Python Rockstar vergelijking — alleen diagnostiek', flush=True)
+          print(f'Python urllib; standaard timeout {TIMEOUT}s per socket; max {MAX_BYTES} bytes per respons', flush=True)
+          results = [(name, run_test(name, url, headers)) for name, url, headers in CASES]
+          print('\n=== OPSNET SAMENVATTING ===', flush=True)
+          for name, status in results:
+              print(f'{name}: {status}', flush=True)
+          print('GEEN wijzigingen aan productie, GitHub bronnen of WordPress.', flush=True)
+          # De diagnose slaagt technisch ook als Rockstar faalt; fout is een meetresultaat.
+          PYCODE
