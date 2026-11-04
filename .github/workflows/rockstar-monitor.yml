@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Rockstar GTAV controleren (Steam fallback v1.4)
+      - name: Rockstar GTAV controleren (v1.5 browserheaders)
         run: |
           python - <<'PY'
           import html
@@ -35,6 +35,7 @@ jobs:
           import re
           import time
           import urllib.error
+          import urllib.parse
           import urllib.request
           from datetime import datetime, timezone, timedelta
           from pathlib import Path
@@ -43,11 +44,18 @@ jobs:
           MANUAL = Path('sources/rockstar-manual.json')
           ROCKSTAR_INDEX = 'https://support.rockstargames.com/gta-v'
           STEAM_API = 'https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/'
-          STEAM_APPS = (271590, 3240220)  # GTA V Legacy & Enhanced
+          STEAM_APPS = (271590, 3240220)
           MAX_BYTES = 2 * 1024 * 1024
+          ROCKSTAR_TIMEOUT = 12
+          ROCKSTAR_ATTEMPTS = 2
           STEAM_TIMEOUT = 8
-          ROCKSTAR_TIMEOUT = 8
           MAX_STALE_HOURS = 48
+          BROWSER_HEADERS = {
+              'User-Agent': 'Mozilla/5.0 (compatible; OPSNET-Source-Diagnostic/1.0)',
+              'Accept': 'text/html,application/xhtml+xml',
+              'Accept-Language': 'en-US,en;q=0.9',
+          }
+          STEAM_HEADERS = {'User-Agent': 'OPSNET-Source-Monitor/1.5', 'Accept': 'application/json'}
           
           
           def now_iso():
@@ -56,54 +64,78 @@ jobs:
           
           def read_json(path):
               try:
-                  obj = json.loads(path.read_text(encoding='utf-8'))
-                  return obj if isinstance(obj, dict) else {}
+                  data = json.loads(path.read_text(encoding='utf-8'))
+                  return data if isinstance(data, dict) else {}
               except (FileNotFoundError, OSError, ValueError):
                   return {}
           
           
-          def vt(v):
-              if not re.fullmatch(r'\d{1,3}\.\d{1,3}', str(v or '')):
+          def vt(value):
+              if not re.fullmatch(r'\d{1,3}\.\d{1,3}', str(value or '')):
                   raise ValueError('Ongeldige versie')
-              return tuple(map(int, v.split('.')))
+              return tuple(map(int, value.split('.')))
           
           
-          def get_json(url, label, timeout):
+          def official_url(url):
+              p = urllib.parse.urlparse(url)
+              return p.scheme == 'https' and p.hostname == 'support.rockstargames.com'
+          
+          
+          def fetch(url, label, headers, timeout, expected_type):
               started = time.monotonic()
-              req = urllib.request.Request(url, headers={
-                  'User-Agent': 'OPSNET-Source-Monitor/1.4 (+https://lspdfr-nl.nl)',
-                  'Accept': 'application/json,text/html;q=0.9',
-              })
+              req = urllib.request.Request(url, headers=headers, method='GET')
               try:
-                  with urllib.request.urlopen(req, timeout=timeout) as res:
-                      status = res.status
-                      raw = res.read(MAX_BYTES + 1)
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      status = response.status
+                      final_url = response.geturl()
+                      content_type = response.headers.get('Content-Type', '')
+                      raw = response.read(MAX_BYTES + 1)
                   if status != 200 or len(raw) > MAX_BYTES:
-                      raise ValueError('HTTP-fout of te grote respons')
-                  print(f'OPSNET {label}: HTTP {status}, {len(raw)} bytes, {time.monotonic()-started:.1f}s', flush=True)
+                      raise ValueError('HTTP-status ongelijk aan 200 of respons groter dan 2 MiB')
+                  if expected_type not in content_type.lower():
+                      raise ValueError(f'Onverwacht contenttype: {content_type[:80]}')
+                  if url.startswith('https://support.rockstargames.com/') and not official_url(final_url):
+                      raise ValueError('Rockstar-redirect naar niet-officiële host')
+                  print(f'OPSNET {label}: HTTP {status}; {len(raw)} bytes; {time.monotonic()-started:.2f}s', flush=True)
                   return raw, None
               except Exception as exc:
-                  msg = f'{type(exc).__name__}: {exc}'[:180]
-                  print(f'OPSNET {label}: {msg}, {time.monotonic()-started:.1f}s', flush=True)
+                  msg = f'{type(exc).__name__}: {exc}'[:200]
+                  print(f'OPSNET {label}: {msg}; {time.monotonic()-started:.2f}s', flush=True)
                   return None, msg
           
           
-          def rockstar_listing(body):
-              text = html.unescape(body.decode('utf-8', 'replace')).replace('\\/', '/')
-              matches = re.findall(r'GTA\s*V\s+Title\s+Update\s+(\d{1,3}\.\d{1,3})\s+Notes', text, re.I)
-              matches += [f'{m[0]}.{m[1]}' for m in re.findall(r'gtav-title-update-(\d{1,3})-(\d{1,3})-notes', text, re.I)]
-              return max(matches, key=vt) if matches else None
+          def official_listing(raw):
+              content = html.unescape(raw.decode('utf-8', 'replace')).replace('\\/', '/')
+              if not re.search(r'<html\b|<!doctype html', content, re.I):
+                  raise ValueError('Geen HTML-document')
+              title = re.compile(r'\bGTA\s*V\s+Title\s+Update\s+(\d{1,3})\.(\d{1,3})\s+Notes\b', re.I)
+              slug = re.compile(r'\bgtav-title-update-(\d{1,3})-(\d{1,3})-notes\b', re.I)
+              versions = set()
+              for pat in (title, slug):
+                  for a, b in pat.findall(content):
+                      versions.add(f'{int(a)}.{int(b)}')
+              if not versions:
+                  raise ValueError('Geen officiële Title Update-titels of -slugs in de pagina')
+              chosen = max(versions, key=vt)
+              # A permalink is useful, but never invent one. Find only an official article URL.
+              url_pattern = re.compile(r'https?://support\.rockstargames\.com/articles/[^\s"<>\\]+|/articles/[^\s"<>\\]+', re.I)
+              evidence = ROCKSTAR_INDEX
+              for match in url_pattern.finditer(content):
+                  candidate = match.group(0).rstrip('.,);')
+                  candidate = urllib.parse.urljoin(ROCKSTAR_INDEX, candidate)
+                  if official_url(candidate) and slug.search(candidate):
+                      version_match = slug.search(candidate)
+                      if f'{int(version_match.group(1))}.{int(version_match.group(2))}' == chosen:
+                          evidence = candidate
+                          break
+              return chosen, evidence, len(versions)
           
           
           def steam_announcements():
-              # Steam returns publisher/community posts and other news; only accept the
-              # exact named announcement feed and explicit title-update notes in TITLE.
-              confirmed = []
-              signals = []
-              failures = []
+              confirmed, signals, failures = [], [], []
               for appid in STEAM_APPS:
                   url = f'{STEAM_API}?appid={appid}&count=50&maxlength=0&feeds=steam_community_announcements'
-                  raw, err = get_json(url, f'Steam {appid}', STEAM_TIMEOUT)
+                  raw, err = fetch(url, f'Steam {appid}', STEAM_HEADERS, STEAM_TIMEOUT, 'json')
                   if raw is None:
                       failures.append(f'{appid}: {err}')
                       continue
@@ -115,103 +147,129 @@ jobs:
                       failures.append(f'{appid}: {exc}')
                       continue
                   for post in posts:
-                      if post.get('feedname') != 'steam_community_announcements':
+                      if not isinstance(post, dict) or post.get('feedname') != 'steam_community_announcements':
                           continue
                       title = html.unescape(str(post.get('title') or ''))
                       permalink = str(post.get('url') or '')
                       if not permalink.startswith(('https://store.steampowered.com/', 'https://steamcommunity.com/')):
                           continue
-                      match = re.search(r'\bGTA\s*V\s+Title\s+Update\s+(\d{1,3}\.\d{1,3})\s+Notes\b', title, re.I)
-                      # Een oud nieuwsbericht is geen actuele bevestiging.
-                      posted_at = datetime.fromtimestamp(int(post.get('date') or 0), tz=timezone.utc)
-                      recent = timedelta(0) <= datetime.now(timezone.utc) - posted_at <= timedelta(days=14)
-                      if match and recent:
-                          version = match.group(1)
-                          vt(version)
-                          confirmed.append({'version': version, 'title': title[:160], 'url': permalink, 'appid': appid})
-                      elif re.search(r'\b(updat(e|ed)|patch|release|now available)\b', title, re.I):
+                      found = re.search(r'\bGTA\s*V\s+Title\s+Update\s+(\d{1,3}\.\d{1,3})\s+Notes\b', title, re.I)
+                      try:
+                          posted_at = datetime.fromtimestamp(int(post.get('date') or 0), tz=timezone.utc)
+                          recent = timedelta(0) <= datetime.now(timezone.utc)-posted_at <= timedelta(days=14)
+                      except (ValueError, TypeError, OverflowError):
+                          recent = False
+                      if found and recent:
+                          confirmed.append({'version': found.group(1), 'url': permalink})
+                      elif re.search(r'\b(update|updated|patch|release|now available)\b', title, re.I):
                           signals.append({'title': title[:160], 'url': permalink, 'appid': appid})
               return confirmed, signals[:5], failures
           
           
           previous = read_json(OUTPUT)
-          old = str(previous.get('version') or '')
+          old = str(previous.get('version') or '').strip()
+          if old:
+              vt(old)
           result = {
               'source': 'rockstar_gtav', 'provider': 'Rockstar Games',
-              'version': old, 'title': previous.get('title') or (f'GTAV Title Update {old} Notes' if old else ''),
-              'source_url': ROCKSTAR_INDEX,
+              'version': old,
+              'title': previous.get('title') or (f'GTAV Title Update {old} Notes' if old else ''),
+              'source_url': previous.get('source_url') or ROCKSTAR_INDEX,
               'checked_at': now_iso(),
               'last_success_at': previous.get('last_success_at', ''),
               'source_changed_at': previous.get('source_changed_at', ''),
               'status': 'degraded', 'verification_method': 'unverified',
           }
-          
-          # Fast independent news endpoint first. No Rockstar HTTP call if an explicit
-          # publisher announcement already confirms a version, avoiding long timeouts.
-          posts, signals, failures = steam_announcements()
-          result['steam_feed_checked_at'] = now_iso() if len(failures) < len(STEAM_APPS) else ''
-          result['news_signals'] = signals
-          best = max(posts, key=lambda p: vt(p['version'])) if posts else None
           accepted = False
-          if best and (not old or vt(best['version']) >= vt(old)):
-              ts = now_iso()
-              result.update({
-                  'version': best['version'], 'title': f'GTAV Title Update {best["version"]} Notes',
-                  'source_url': best['url'], 'verification_method': 'steam_publisher_announcement',
-                  'status': 'online', 'last_success_at': ts,
-                  'steam_confirmation_url': best['url'],
-              })
-              accepted = True
-              if best['version'] != old or not result['source_changed_at']:
-                  result['source_changed_at'] = ts
-              print(f'OPSNET: expliciete Steam-uitgeverspublicatie bevestigd: {best["version"]}', flush=True)
+          last_error = ''
+          for attempt in range(1, ROCKSTAR_ATTEMPTS + 1):
+              raw, error = fetch(ROCKSTAR_INDEX, f'Rockstar officiële bron {attempt}/{ROCKSTAR_ATTEMPTS}',
+                                 BROWSER_HEADERS, ROCKSTAR_TIMEOUT, 'text/html')
+              if raw is None:
+                  last_error = error or 'Rockstar-netwerkfout'
+              else:
+                  try:
+                      candidate, evidence, count = official_listing(raw)
+                      if old and vt(candidate) < vt(old):
+                          raise ValueError(f'Bronversie {candidate} is ouder dan de bekende {old}')
+                      timestamp = now_iso()
+                      result.update({
+                          'version': candidate,
+                          'title': f'GTAV Title Update {candidate} Notes',
+                          'source_url': evidence,
+                          'status': 'online',
+                          'verification_method': 'official_listing',
+                          'last_success_at': timestamp,
+                      })
+                      if candidate != old or not result['source_changed_at']:
+                          result['source_changed_at'] = timestamp
+                      accepted = True
+                      print(f'OPSNET: Rockstar officieel ONLINE; {candidate}; gevonden versie-aantallen={count}; bewijs={evidence}', flush=True)
+                      break
+                  except ValueError as exc:
+                      last_error = str(exc)
+                      print(f'OPSNET Rockstar parsing: {last_error}', flush=True)
+              if attempt < ROCKSTAR_ATTEMPTS:
+                  time.sleep(2)
           
           if not accepted:
-              # One short official attempt, not three 15-second requests.
-              raw, err = get_json(ROCKSTAR_INDEX, 'Rockstar', ROCKSTAR_TIMEOUT)
-              version = rockstar_listing(raw) if raw else None
-              if version and (not old or vt(version) >= vt(old)):
-                  ts = now_iso()
-                  result.update({'version': version, 'title': f'GTAV Title Update {version} Notes',
-                                 'source_url': ROCKSTAR_INDEX, 'status': 'online',
-                                 'verification_method': 'official_listing', 'last_success_at': ts})
-                  if version != old or not result['source_changed_at']:
-                      result['source_changed_at'] = ts
+              # Steam signals are fallback evidence, not proof of Rockstar network health.
+              confirmed, signals, failures = steam_announcements()
+              result['steam_feed_checked_at'] = now_iso() if len(failures) < len(STEAM_APPS) else ''
+              result['news_signals'] = signals
+              best = max(confirmed, key=lambda x: vt(x['version'])) if confirmed else None
+              if best and (not old or vt(best['version']) >= vt(old)):
+                  timestamp = now_iso()
+                  candidate = best['version']
+                  result.update({
+                      'version': candidate,
+                      'title': f'GTAV Title Update {candidate} Notes',
+                      'source_url': best['url'],
+                      'verification_method': 'steam_publisher_announcement',
+                      'status': 'online',
+                      'last_success_at': timestamp,
+                      'steam_confirmation_url': best['url'],
+                  })
+                  if candidate != old or not result['source_changed_at']:
+                      result['source_changed_at'] = timestamp
                   accepted = True
-                  print(f'OPSNET: Rockstar-overzicht bevestigt versie {version}', flush=True)
+                  print(f'OPSNET: Steam bevestigde versie {candidate}; Rockstar zelf bleef onbereikbaar', flush=True)
               else:
-                  result['error'] = (err or 'Geen herkenbare Rockstar Title Update in HTML')[:350]
+                  result['error'] = (last_error or 'Geen geldige automatische Rockstar-versie')[:350]
                   if failures:
                       result['secondary_errors'] = failures[:2]
-                  print('OPSNET: geen automatische bevestiging; huidige versie blijft behouden', flush=True)
+                  print('OPSNET: DEGRADED; bekende versie blijft behouden', flush=True)
           
           if not accepted:
               manual = read_json(MANUAL)
               try:
                   candidate = str(manual['version']).strip()
-                  ts = datetime.fromisoformat(str(manual['verified_at']).replace('Z', '+00:00'))
+                  verified = datetime.fromisoformat(str(manual['verified_at']).replace('Z', '+00:00'))
                   proof = str(manual['evidence_url'])
-                  if ts.tzinfo is None or not proof.startswith('https://support.rockstargames.com/'):
+                  if verified.tzinfo is None or not official_url(proof) or '/articles/' not in proof:
                       raise ValueError('Ongeldige officiële bewijslink of tijdzone')
-                  if not timedelta(0) <= datetime.now(timezone.utc) - ts <= timedelta(hours=MAX_STALE_HOURS):
-                      raise ValueError('Handmatige bevestiging buiten 48 uur')
+                  if not timedelta(0) <= datetime.now(timezone.utc)-verified <= timedelta(hours=MAX_STALE_HOURS):
+                      raise ValueError('Handmatige bevestiging ouder dan 48 uur')
                   if old and vt(candidate) < vt(old):
-                      raise ValueError('Ouder dan bekende versie')
+                      raise ValueError('Handmatige versie ouder dan de bekende')
                   vt(candidate)
-                  result.update({'version': candidate,
-                                 'title': f'GTAV Title Update {candidate} Notes',
-                                 'verification_method': 'manual_official_link',
-                                 'manual_verified_at': ts.isoformat(), 'manual_evidence_url': proof})
+                  result.update({
+                      'version': candidate,
+                      'title': f'GTAV Title Update {candidate} Notes',
+                      'verification_method': 'manual_official_link',
+                      'manual_verified_at': verified.isoformat(),
+                      'manual_evidence_url': proof,
+                  })
                   if candidate != old:
-                      result['source_changed_at'] = ts.isoformat()
-                  print(f'OPSNET: handmatige versie {candidate}; status blijft DEGRADED', flush=True)
+                      result['source_changed_at'] = verified.isoformat()
+                  print(f'OPSNET: handmatige bevestiging {candidate}; status blijft DEGRADED', flush=True)
               except (KeyError, ValueError, TypeError) as exc:
                   if MANUAL.exists():
-                      print(f'OPSNET: handmatig bewijs geweigerd: {exc}', flush=True)
+                      print(f'OPSNET: handmatig bewijs niet gebruikt: {exc}', flush=True)
           
           result['checked_at'] = now_iso()
           OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-          OUTPUT.write_text(json.dumps(result, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+          OUTPUT.write_text(json.dumps(result, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
           print('OPSNET resultaat:', json.dumps({k: result.get(k) for k in (
               'version', 'status', 'verification_method', 'checked_at', 'last_success_at', 'source_changed_at', 'error'
           )}, ensure_ascii=False), flush=True)
