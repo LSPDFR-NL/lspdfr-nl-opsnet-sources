@@ -1,0 +1,119 @@
+name: OPSNET Rockstar RSC Discovery (TEST)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opsnet-rockstar-rsc-discovery-test
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Rockstar RSC netwerkdiagnose (alleen lezen)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Python 3.12 installeren
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Publieke Rockstar-routes testen
+        shell: bash
+        run: |
+          python - <<'PY'
+          import html
+          import re
+          import socket
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          BASE = 'https://support.rockstargames.com'
+          ARTICLE = (
+              BASE + '/articles/4vRqEDvjUs9h7nqRUgc8YO/'
+              'gtav-title-update-1-73-notes-ps5-ps4-'
+              'xbox-series-x-or-s-xbox-one-pc-enhanced-legacy'
+          )
+          # De _rsc-waarde is slechts de waarde uit de browserscreenshot.
+          # Dit is een DIAGNOSE, geen stabiel of officieel API-contract.
+          TESTS = [
+              ('Artikel: gewone GET', ARTICLE, {'Accept': 'text/html'}),
+              ('Artikel: RSC GET', ARTICLE + '?_rsc=m5too', {
+                  'Accept': 'text/x-component', 'RSC': '1'
+              }),
+              ('Overzicht: RSC GET', BASE + '/articles?category=gta-v&_rsc=m5too', {
+                  'Accept': 'text/x-component', 'RSC': '1'
+              }),
+          ]
+          MAX_BYTES = 1024 * 1024
+          TIMEOUT = 12
+          rows = []
+          print('OPSNET RSC Discovery — start (UTC):', datetime.now(timezone.utc).isoformat())
+          print('Geen cookies, tokens, login, schrijfacties of bronbestanden.')
+
+          for label, url, extra_headers in TESTS:
+              print('\n=== ' + label + ' ===', flush=True)
+              started = time.monotonic()
+              headers = {
+                  'User-Agent': 'Mozilla/5.0 OPSNET-Public-Source-Diagnostic/1.0',
+                  'Accept-Language': 'en-US,en;q=0.9',
+                  **extra_headers,
+              }
+              req = urllib.request.Request(url, headers=headers)
+              outcome = {'label': label, 'http': '-', 'ctype': '-', 'version': '-', 'time': '-'}
+              try:
+                  with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
+                      outcome['http'] = str(res.status)
+                      outcome['ctype'] = (res.headers.get('Content-Type') or '').split(';')[0]
+                      print('HTTP:', res.status, '| Content-Type:', res.headers.get('Content-Type'))
+                      raw = res.read(MAX_BYTES + 1)
+                      if len(raw) > MAX_BYTES:
+                          raise ValueError('Respons groter dan 1 MiB; afgebroken')
+                  content = html.unescape(raw.decode('utf-8', 'replace')).replace('\\/', '/')
+                  # Alleen titelpatronen; geen willekeurige getallen of GTA Online-nieuws.
+                  patterns = [
+                      r'GTA\s*V\s+Title\s+Update\s+(\d{1,3}\.\d{1,3})\s+Notes',
+                      r'GTAV\s+Title\s+Update\s+(\d{1,3}\.\d{1,3})\s+Notes',
+                      r'gtav-title-update-(\d{1,3})-(\d{1,3})-notes',
+                  ]
+                  found = set()
+                  for pat in patterns[:2]:
+                      found.update(re.findall(pat, content, flags=re.I))
+                  for major, minor in re.findall(patterns[2], content, flags=re.I):
+                      found.add(f'{int(major)}.{minor}')
+                  # Versies alleen tonen; niet de volledige respons of headers loggen.
+                  versions = sorted(found, key=lambda s: tuple(map(int, s.split('.'))), reverse=True)
+                  outcome['version'] = ', '.join(versions[:5]) or 'niet gevonden'
+                  print('Bytes:', len(raw), '| Titelversies:', outcome['version'])
+                  print('RSC-achtig antwoord:', outcome['ctype'] == 'text/x-component')
+              except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                      socket.timeout, OSError, UnicodeError, ValueError) as exc:
+                  print('Fout:', type(exc).__name__, str(exc)[:180])
+              except Exception as exc:
+                  print('Onverwachte fout:', type(exc).__name__, str(exc)[:180])
+              outcome['time'] = f'{time.monotonic() - started:.1f}s'
+              print('Duur:', outcome['time'], flush=True)
+              rows.append(outcome)
+
+          report = ['## OPSNET Rockstar RSC Discovery — testresultaten', '',
+                    '| Route | HTTP | Content-Type | Titelversies | Duur |',
+                    '|---|---|---|---|---|']
+          for item in rows:
+              report.append('| ' + ' | '.join(item[k].replace('|', '/') for k in
+                            ('label', 'http', 'ctype', 'version', 'time')) + ' |')
+          report += ['', '**Let op:** een HTTP 200 bewijst nog niet dat toekomstige versies automatisch ontdekt kunnen worden. '
+                     'De RSC-route is een interne Next.js-route, geen gegarandeerd stabiele API. '
+                     'Dit experiment heeft geen productiegegevens gewijzigd.']
+          summary = '\n'.join(report) + '\n'
+          print('\n' + summary)
+          summary_file = __import__('os').environ.get('GITHUB_STEP_SUMMARY')
+          if summary_file:
+              with open(summary_file, 'a', encoding='utf-8') as f:
+                  f.write(summary)
+          PY
